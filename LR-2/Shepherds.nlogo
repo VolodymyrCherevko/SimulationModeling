@@ -3,93 +3,185 @@ breed [shepherds shepherd]
 
 globals
 [
-  sheepless-neighborhoods       ;; how many patches have no sheep in any neighboring patches?
-  herding-efficiency            ;; measures how well-herded the sheep are
+  first-team-color
+  second-team-color
+  drop-off-area-radius         ;; area where shepherds have to drop off sheep
+  safe-pasture-area-radius     ;; area around drop off zone where sheep can move and shepereds don't pick up them
 ]
 patches-own
 [
-  sheep-nearby                  ;; how many sheep in neighboring patches?
+  patch-team-color             ;; what team the patch belongs to ('nobody' if the patch belongs to nobody)
+  is-drop-off-area             ;; let shepherd to drop-off a sheep here
+]
+
+sheep-own
+[
+  team-color                   ;; indicates which team the sheep belongs to
 ]
 shepherds-own
 [
-  carried-sheep         ;; the sheep I'm carrying (or nobody if I'm not carrying in)
-  found-herd?           ;; becomes true when I find a herd to drop it in
+  carried-sheep                ;; the sheep the shepherd is carrying ('nobody' if he is carrying nothing)
+  team-color                   ;; indicates which team the shepherd belongs to
 ]
 
 to setup
   clear-all
   set-default-shape sheep "sheep"
   set-default-shape shepherds "person"
+
+  set first-team-color yellow                                     ;; set first team color
+  set second-team-color blue                                      ;; set second team color
+  set safe-pasture-area-radius ceiling ((sqrt num-sheep) / 4)
+  set drop-off-area-radius ceiling (safe-pasture-area-radius / 4)
+
   ask patches
-    [ set pcolor green + (random-float 0.8) - 0.4]   ;; varying the green just makes it look nicer
+  [
+    set pcolor green + (random-float 0.8) - 0.4    ;; varying the green just makes it look nicer
+    set patch-team-color nobody                    ;; all patches belong to nobody in the begining
+    set is-drop-off-area false                     ;; there are no drop off areas in the begining
+    setup-pasture-area first-team-color            ;; setup pasture area for first team
+    setup-pasture-area second-team-color           ;; setup pasture area for second team
+  ]
+
   create-sheep num-sheep
-    [ set color white
-      set size 1.5  ;; easier to see
-      setxy random-xcor random-ycor ]
+  [
+    set team-color get-team-color                  ;; random set a team for a sheep
+    set color get-sheep-color team-color           ;; according to team set sheep color
+    set size 1.5                                   ;; easier to see
+    setxy random-xcor random-ycor
+  ]
+
   create-shepherds num-shepherds
-    [ set color brown
-      set size 1.5  ;; easier to see
-      set carried-sheep nobody
-      set found-herd? false
-      setxy random-xcor random-ycor ]
+  [
+    set team-color get-team-color                 ;; random set a team for a shepherd
+    set color team-color                          ;; according to team set shepherd color
+    set size 1.5                                  ;; easier to see
+    set carried-sheep nobody
+    setxy random-xcor random-ycor
+  ]
+
   reset-ticks
 end
 
-to update-sheep-counts
-  ask patches
-    [ set sheep-nearby (sum [count sheep-here] of neighbors) ]
-  set sheepless-neighborhoods (count patches with [sheep-nearby = 0])
-end
-
-to calculate-herding-efficiency
-  set herding-efficiency (sheepless-neighborhoods / (count patches with [not any? sheep-here])) * 100
-end
-
 to go
+  ifelse is-game-over
+  [ stop ]                                        ;; stop simulation if any team collected all their sheep
+  [ tick ]
+
   ask shepherds
   [ ifelse carried-sheep = nobody
-      [ search-for-sheep ]     ;; find a sheep and pick it up
-    [ ifelse found-herd?
-        [ find-empty-spot ]  ;; find an empty spot to drop the sheep
-      [ find-new-herd ] ]  ;; find a herd to drop the sheep in
-    wiggle
+    [
+      search-for-sheep                            ;; find a sheep and pick it up
+      wiggle
+    ]
+    [ find-empty-spot ]                           ;; find an empty spot to drop the sheep
+
     fd 1
     if carried-sheep != nobody
-    ;; bring my sheep to where I just moved to
-    [ ask carried-sheep [ move-to myself ] ] ]
-  ask sheep with [not hidden?]
-  [ wiggle
-    fd sheep-speed ]
-  tick
+    [ ask carried-sheep [ move-to myself ] ]      ;; bring my sheep to where I just moved to
+  ]
+
+  ask sheep with [color != red]                   ;; the sheep that is being carrying shouldn't move on its own
+  [
+    wiggle
+    fd sheep-speed
+  ]
 end
 
-to wiggle        ;; turtle procedure
+to wiggle                                         ;; turtle procedure of ramdom moving
   rt random 50 - random 50
 end
 
-to search-for-sheep ;; shepherds procedure
-  set carried-sheep one-of sheep-here with [not hidden?]
+to search-for-sheep                               ;; shepherds procedure of sheep searching
+  let shepherd-team-color team-color
+  set carried-sheep one-of sheep-here with [
+    color != red                                  ;; a sheep is not carried by someone else
+    and (pick-up-any-sheep                        ;; it's allowed to take any sheep
+      or team-color = shepherd-team-color)        ;; a sheep team and a shepered team are the same
+    and (patch-team-color = nobody                ;; a sheep is located away from the pasture
+      or patch-team-color != shepherd-team-color  ;; a sheep is located in someone else's pasture
+      or team-color != shepherd-team-color) ]     ;; a sheep team and a shepherd team are different (condition reachable when 'pick-up-any-sheep' is ON and a sheep from someone else's pasture on shepherd's pasture area)
+
   if (carried-sheep != nobody)
     [ ask carried-sheep
-        [ hide-turtle ]  ;; make the sheep invisible to other shepherds
-      set color blue     ;; turn shepherd blue while carrying sheep
+      [
+        set color red                             ;; it makes the sheep unavailable to other shepherds while carrying
+        set team-color shepherd-team-color        ;; to appropriate the sheep (for case when shepherd took someone else's sheep)
+      ]
+      set color team-color + 2                    ;; it indicateds that shepherd is bussy while carrying a sheep
       fd 1 ]
 end
 
-to find-new-herd ;; shepherds procedure
-  if any? sheep-here with [not hidden?]
-    [ set found-herd? true ]
+to find-empty-spot                                ;; looking for its own pasture and area on it to drop off a sheep
+  if (patch-team-color = team-color and is-drop-off-area)
+  [
+    ask carried-sheep
+    [ set color get-sheep-color team-color ]      ;; make the sheep accessible again
+    set color team-color                          ;; make the shepherd free
+    set carried-sheep nobody                      ;; make the shepherd free
+  ]
+  set-pasture-direction
 end
 
-to find-empty-spot ;; shepherds procedure
-  if all? sheep-here [hidden?]
-    [ ask carried-sheep
-        [ show-turtle ]       ;; make the sheep visible again
-      set color brown         ;; set my own color back to brown
-      set carried-sheep nobody
-      set found-herd? false
-      rt random 360
-      fd 20 ]
+to set-pasture-direction                          ;; set heading of moving to team drop off area for sheperd when he is carrying a sheep
+  let pasture-cor get-pasture-cor team-color
+  set heading ((atan (pasture-cor - xcor) (pasture-cor - ycor) ))
+end
+
+to-report is-game-over                            ;; returns boolean is any of team collected more than 99% of all their sheep
+  let first-team-progress calculate-team-progress first-team-color
+  let second-team-progress calculate-team-progress second-team-color
+  if first-team-progress < 99 and second-team-progress < 99
+  [ report false ]
+
+  let winner-color "Yellow"                       ;; first-team-color
+  if  second-team-progress > first-team-progress
+  [ set winner-color "Blue" ]                     ;; second-team-color
+
+  print "** Victory **"                           ;; prints which team won
+  print word winner-color " team collected all sheep"
+  report true
+end
+
+to setup-pasture-area [ color-of-team ]
+  let pasture-cor get-pasture-cor color-of-team
+
+  if pxcor >= pasture-cor - safe-pasture-area-radius and pxcor <= pasture-cor + safe-pasture-area-radius and pycor >= pasture-cor - safe-pasture-area-radius and pycor <= pasture-cor + safe-pasture-area-radius
+  [
+    set pcolor 63.5                               ;; paint pasture area
+    set patch-team-color color-of-team            ;; mark that patches belong to a team
+  ]
+
+  if (pxcor > pasture-cor - drop-off-area-radius and pxcor < pasture-cor + drop-off-area-radius
+      and pycor > pasture-cor - drop-off-area-radius and pycor < pasture-cor + drop-off-area-radius)
+  [
+    set is-drop-off-area true                     ;; mark dropping off area
+    set pcolor color-of-team                      ;; paint drop off area in team color
+  ]
+end
+
+to-report get-team-color                          ;; random return team color
+  ifelse (random 2 > 0)
+  [ report first-team-color ]
+  [ report second-team-color ]
+end
+
+to-report get-pasture-cor [colour]                ;; accordig to team color return coordinates of pasture location
+  ifelse (colour = first-team-color)
+  [ report 10 ]
+  [ report -10 ]
+end
+
+to-report get-sheep-color [colour]               ;; accordig to team color paint sheep
+  ifelse (colour = first-team-color)
+  [ report white ]
+  [ report black]
+end
+
+to-report calculate-team-progress [ colour ]    ;; calculate how many sheep are already collected
+  let collected-sheep count sheep with [ patch-team-color = team-color and team-color = colour ] ;; sheep that are already on home pasture
+  let all-sheep count sheep with [ team-color = colour ] + 0.001                                 ;; all sheep of this team P.S. + 0.001 is a workaround to avoid division by zero
+  report (collected-sheep / all-sheep) * 100
 end
 
 
@@ -97,13 +189,13 @@ end
 ; See Info tab for full copyright and license.
 @#$#@#$#@
 GRAPHICS-WINDOW
-248
+249
 10
-664
+665
 427
 -1
 -1
-8
+8.0
 1
 10
 1
@@ -121,25 +213,26 @@ GRAPHICS-WINDOW
 1
 1
 ticks
-30
+30.0
 
 PLOT
-7
-241
-237
-414
-Herding Efficiency
+12
+265
+242
+438
+Sheep collecting progress
 Time
 Percent
-0
-300
-0
-100
+0.0
+300.0
+0.0
+100.0
 true
 false
 "" ""
 PENS
-"efficiency" 1 0 -13345367 true "" "if ticks mod 50 = 0  ;; since the calculations are expensive\n[\n  update-sheep-counts\n  calculate-herding-efficiency\n  plotxy ticks herding-efficiency\n]"
+"first-team" 1.0 0 -1184463 true "" "if ticks mod 50 = 0  ;; since the calculations are expensive\n[\n  plotxy ticks calculate-team-progress first-team-color\n]"
+"second-team" 1.0 0 -13345367 true "" "if ticks mod 50 = 0  ;; since the calculations are expensive\n[\n  plotxy ticks calculate-team-progress second-team-color\n]"
 
 SLIDER
 38
@@ -150,7 +243,7 @@ num-sheep
 num-sheep
 0
 500
-150
+127.0
 1
 1
 NIL
@@ -165,7 +258,7 @@ num-shepherds
 num-shepherds
 0
 100
-30
+31.0
 1
 1
 NIL
@@ -220,16 +313,103 @@ sheep-speed
 NIL
 HORIZONTAL
 
+SWITCH
+38
+188
+208
+221
+pick-up-any-sheep
+pick-up-any-sheep
+1
+1
+-1000
+
 MONITOR
-63
-192
-176
-237
-current efficiency
-herding-efficiency
+679
+40
+822
+86
+Blue team sheep count
+count sheep with [ team-color = first-team-color ]
+17
+1
+11
+
+MONITOR
+679
+275
+823
+321
+Yellow team sheep count
+count sheep with [ team-color = second-team-color ]
+17
+1
+11
+
+MONITOR
+678
+93
+822
+139
+Blue team shepereds count
+count shepherds with [team-color = first-team-color ]
+17
+1
+11
+
+MONITOR
+678
+330
+821
+376
+Black team shepherd count
+count shepherds with [ team-color = second-team-color ]
+17
+1
+11
+
+MONITOR
+678
+145
+822
+191
+Collected sheep, % (blue)
+calculate-team-progress first-team-color
 1
 1
 11
+
+MONITOR
+678
+380
+822
+426
+Collected sheep, % (yellow)
+calculate-team-progress second-team-color
+1
+1
+11
+
+TEXTBOX
+680
+249
+817
+270
+Blue team
+18
+105.0
+1
+
+TEXTBOX
+679
+12
+816
+33
+Yellow team
+18
+45.0
+1
+
 @#$#@#$#@
 ## WHAT IS IT?
 
@@ -647,22 +827,22 @@ false
 Polygon -7500403 true true 270 75 225 30 30 225 75 270
 Polygon -7500403 true true 30 75 75 30 270 225 225 270
 @#$#@#$#@
-NetLogo 6.2.2
+NetLogo 6.3.0
 @#$#@#$#@
 @#$#@#$#@
 @#$#@#$#@
 @#$#@#$#@
 @#$#@#$#@
 default
-0
--0.2 0 0 1
-0 1 1 0
-0.2 0 0 1
+0.0
+-0.2 0 0.0 1.0
+0.0 1 1.0 0.0
+0.2 0 0.0 1.0
 link direction
 true
 0
 Line -7500403 true 150 150 90 180
 Line -7500403 true 150 150 210 180
 @#$#@#$#@
-
+0
 @#$#@#$#@
